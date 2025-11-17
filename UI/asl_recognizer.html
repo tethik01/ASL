@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASL Recognizer</title>
+    <!-- 1. Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. Load Socket.IO Client -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    
+    <!-- 3. Load MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    
+    <style>
+        /* Simple styles for tabs */
+        .tab-button {
+            @apply flex-1 py-3 px-4 text-center font-medium text-gray-400 bg-gray-700 border-b-4 border-transparent
+                   hover:bg-gray-600 hover:text-white transition;
+        }
+        .tab-button.active {
+            @apply text-white border-b-4 border-blue-500 bg-gray-700;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center min-h-screen bg-gray-900 text-white font-sans p-4">
+
+    <!-- Header -->
+    <h1 class="text-4xl font-bold mb-2">ASL Recognizer</h1>
+    <div class="h-2 w-20 rounded-full bg-blue-500 mb-6"></div>
+
+    <!-- Connection Status -->
+    <div class="absolute top-4 right-4 flex items-center space-x-2">
+        <span id="status-text" class="text-sm uppercase font-semibold">Connecting...</span>
+        <div id="status-indicator" class="w-3 h-3 rounded-full bg-red-500 animate-pulse"></div>
+    </div>
+
+    <!-- Mode Toggle -> Becomes Mode Tabs -->
+    <div class="mb-6 w-full max-w-6xl">
+        <div class="flex rounded-lg overflow-hidden border border-gray-700">
+            <button id="tab-live" class="tab-button">
+                Live Camera
+            </button>
+            <button id="tab-mp4" class="tab-button active">
+                MP4 File
+            </button>
+            <button id="tab-npz" class="tab-button">
+                NPZ File
+            </button>
+        </div>
+    </div>
+
+    <div class="flex flex-col lg:flex-row gap-8 w-full max-w-6xl">
+
+        <!-- Left Panel: Camera / File Player -->
+        <div class="flex-1 bg-gray-800 rounded-lg shadow-xl overflow-hidden border-4 border-gray-700">
+            <!-- Title will be set by JS -->
+            <h2 id="left-panel-title" class="text-center text-xl font-semibold p-3 bg-gray-700">
+                Video File
+            </h2>
+            
+            <!-- Video Container (shared by live and file) -->
+            <div id="video-container" class="relative aspect-video bg-black">
+                <!-- Hidden video for webcam -->
+                <video id="live-video" class="w-full h-full" autoPlay playsInline></video>
+                
+                <!-- Visible video player for file upload -->
+                <!-- FIX: Removed bad 'class.' attribute -->
+                <video id="file-video" class="w-full h-full" controls playsInline></video>
+                
+                <!-- Placeholder for live mode -->
+                <div id="live-video-placeholder" class="absolute inset-0 flex items-center justify-center h-full bg-black">
+                    <p class="text-gray-400">Webcam is active</p>
+                </div>
+
+                <!-- Placeholder for NPZ mode -->
+                <div id="npz-placeholder" class="absolute inset-0 flex items-center justify-center h-full bg-black">
+                    <p class="text-gray-400">Upload an NPZ file below to predict.</p>
+                </div>
+            </div>
+            
+            
+            <!-- File Upload Input Area (Context sensitive) -->
+            <div id="file-upload-container" class="p-4 bg-gray-700 border-t-2 border-gray-600">
+                <!-- MP4 Upload (default) -->
+                <div id="mp4-uploader">
+                    <label class="block text-sm font-medium text-gray-300 mb-2" for="file_input_mp4">
+                        Upload MP4 File
+                    </label>
+                    <input
+                        class="block w-full text-sm text-gray-400
+                          file:mr-4 file:py-2 file:px-4
+                          file:rounded-lg file:border-0
+                          file:text-sm file:font-semibold
+                          file:bg-blue-500 file:text-white
+                          hover:file:bg-blue-600"
+                        id="file-input-mp4"
+                        type="file"
+                        accept="video/mp4"
+                    />
+                </div>
+                
+                <!-- NPZ Upload (hidden) -->
+                <div id="npz-uploader" class="hidden">
+                    <label class="block text-sm font-medium text-gray-300 mb-2" for="file_input_npz">
+                        Upload NPZ File
+                    </label>
+                    <div class="flex gap-4">
+                        <input
+                            class="block w-full text-sm text-gray-400
+                              file:mr-4 file:py-2 file:px-4
+                              file:rounded-lg file:border-0
+                              file:text-sm file:font-semibold
+                              file:bg-gray-500 file:text-white
+                              hover:file:bg-gray-600"
+                            id="file-input-npz"
+                            type="file"
+                            accept=".npz"
+                        />
+                        <button id="npz-predict-button" class="flex-shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">
+                            Predict
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Predictions -->
+        <div class="flex-1 lg:max-w-md">
+            <div class="bg-gray-800 rounded-lg shadow-xl border-4 border-gray-700 p-6 h-full min-h-[300px]">
+                <h2 class="text-left text-xl font-semibold mb-6">Prediction</h2>
+                
+                <!-- Loading/Processing Indicator -->
+                <div id="processing-indicator" class="text-center mb-8 hidden">
+                     <div class="text-2xl font-light text-blue-400">Processing File...</div>
+                </div>
+                
+                <!-- Top Prediction -->
+                <div id="prediction-container" class="text-center mb-8">
+                    <div id="top-prediction-label" class="text-6xl lg:text-8xl font-bold text-blue-400 mb-2 truncate">
+                        ---
+                    </div>
+                    <div id="top-prediction-prob" class="text-4xl font-light text-gray-300">
+                        ...
+                    </div>
+                </div>
+
+                <!-- Other Predictions -->
+                <div id="other-predictions-list" class="space-y-3">
+                    <!-- Predictions will be injected here by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Footer Note -->
+    <div class="mt-6 text-gray-500 text-sm text-center">
+        <strong>Note:</strong> Feature extraction logic is now complete.<br/>
+        Using the <strong>513-feature recipe</strong> (Pose, Face, Hands) for predictions.
+    </div>
+
+    <!-- 4. Main Application JavaScript -->
+    <script type="module">
+        // --- Global Settings ---
+        const SOCKET_URL = 'http://localhost:5001';
+        
+        // --- NEW 513 FEATURE RECIPE (from infer_mapping.py) ---
+        const POSE_FEATS = 132;   // 33 landmarks * (world_x, world_y, world_z, visibility)
+        const FACE_FEATS = 255;   // 85 landmarks * (image_x, image_y, image_z)
+        const HAND_FEATS = 63;    // 21 landmarks * (image_x, image_y, image_z)
+        
+        const INPUT_FEATURE_DIM = POSE_FEATS + FACE_FEATS + HAND_FEATS + HAND_FEATS; // 513
+        
+        // --- !!! THE LAST MISSING PIECE !!! ---
+        /**
+         * Run `infer_mapping.py` to get your `face_indices_85.json` file.
+         * Copy the 85 numbers from that file and paste them into this array.
+         * For example: [1, 2, 3, 4, 5, ..., 467]
+         */
+        const FACE_LANDMARK_INDICES = [
+            // PASTE YOUR 85 LANDMARK INDICES HERE
+            361, 323, 340, 389, 347, 288, 356, 346, 261, 454, 397, 365, 435, 
+            367, 401, 379, 364, 366, 447, 433, 394, 378, 416, 264, 376, 434, 
+            265, 448, 395, 352, 430, 400, 345, 411, 368, 431, 432, 372, 427, 
+            422, 251, 0, 248, 166, 405, 383, 10, 179, 369, 301, 5, 142, 424, 
+            280, 177, 100, 16, 446, 440, 58, 302, 132, 129, 172, 377, 137, 
+            93, 420, 262, 234, 158, 102, 13, 287, 45, 126, 151, 436, 396, 
+            127, 244, 425, 354, 215, 338
+        ];
+        // --- !!! END MISSING PIECE !!! ---
+
+        // --- Wait for the DOM to be loaded before running any script ---
+        window.addEventListener('DOMContentLoaded', () => {
+
+            // --- DOM Elements ---
+            const statusText = document.getElementById('status-text');
+            const statusIndicator = document.getElementById('status-indicator');
+            
+            // Tab buttons
+            const tabLive = document.getElementById('tab-live');
+            const tabMp4 = document.getElementById('tab-mp4');
+            const tabNpz = document.getElementById('tab-npz');
+            
+            const leftPanelTitle = document.getElementById('left-panel-title');
+            
+            // Video elements
+            const videoContainer = document.getElementById('video-container');
+            const liveVideo = document.getElementById('live-video');
+            const fileVideo = document.getElementById('file-video');
+            const liveVideoPlaceholder = document.getElementById('live-video-placeholder');
+            const npzPlaceholder = document.getElementById('npz-placeholder');
+
+            // Uploader elements
+            const fileUploadContainer = document.getElementById('file-upload-container');
+            const mp4Uploader = document.getElementById('mp4-uploader');
+            const fileInputMp4 = document.getElementById('file-input-mp4');
+            const npzUploader = document.getElementById('npz-uploader');
+            const fileInputNpz = document.getElementById('file-input-npz');
+            const npzPredictButton = document.getElementById('npz-predict-button');
+
+            const processingIndicator = document.getElementById('processing-indicator');
+            const predictionContainer = document.getElementById('prediction-container');
+            const topLabel = document.getElementById('top-prediction-label');
+            const topProb = document.getElementById('top-prediction-prob');
+            const otherList = document.getElementById('other-predictions-list');
+
+            // --- Application State ---
+            let socket = null;
+            let mode = 'mp4'; // Default to file mode (now 'mp4')
+            let holistic = null;
+            let camera = null;
+            let animFrameRef = null;
+            let fileFrameCounter = 0;
+            
+            
+            // --- Feature Extraction (Unchanged) ---
+            function extractFeatures(results) {
+                const features = new Float32Array(INPUT_FEATURE_DIM);
+                let offset = 0;
+
+                // 1. Pose (132 features)
+                // 33 landmarks * (world_x, world_y, world_z, visibility)
+                for (let i = 0; i < 33; i++) {
+                    const poseWorld = results.pose_world_landmarks?.[i];
+                    const poseImage = results.pose_landmarks?.[i];
+                    
+                    features[offset++] = poseWorld?.x || 0;
+                    features[offset++] = poseWorld?.y || 0;
+                    features[offset++] = poseWorld?.z || 0;
+                    features[offset++] = poseImage?.visibility || 0;
+                }
+
+                // 2. Face (255 features)
+                // 85 landmarks * (image_x, image_y, image_z)
+                if (FACE_LANDMARK_INDICES.length !== 85) {
+                    if (fileFrameCounter < 2) { // Only log this error once
+                       console.warn(`[Recipe Error] FACE_LANDMARK_INDICES array has ${FACE_LANDMARK_INDICES.length} items, but expected 85. Predictions will be wrong.`);
+                    }
+                    // Still, we must fill the 255 slots to match the model's input shape
+                    offset += FACE_FEATS;
+                } else {
+                    FACE_LANDMARK_INDICES.forEach(index => {
+                        const lm = results.face_landmarks?.[index];
+                        features[offset++] = lm?.x || 0;
+                        features[offset++] = lm?.y || 0;
+                        features[offset++] = lm?.z || 0;
+                    });
+                }
+
+                // 3. Left Hand (63 features)
+                // 21 landmarks * (image_x, image_y, image_z)
+                for (let i = 0; i < 21; i++) {
+                    const lm = results.left_hand_landmarks?.[i];
+                    features[offset++] = lm?.x || 0;
+                    features[offset++] = lm?.y || 0;
+                    features[offset++] = lm?.z || 0;
+                }
+
+                // 4. Right Hand (63 features)
+                // 21 landmarks * (image_x, image_y, image_z)
+                for (let i = 0; i < 21; i++) {
+                    const lm = results.right_hand_landmarks?.[i];
+                    features[offset++] = lm?.x || 0;
+                    features[offset++] = lm?.y || 0;
+                    features[offset++] = lm?.z || 0;
+                }
+                
+                return features;
+            }
+
+            // --- UI Update Functions (Unchanged) ---
+            function updatePredictionUI(predictions) {
+                if (!predictions || predictions.length === 0) {
+                    topLabel.textContent = '---';
+                    topProb.textContent = '...';
+                    otherList.innerHTML = '';
+                    return;
+                }
+
+                const topPrediction = predictions[0];
+                topLabel.textContent = topPrediction.label;
+                topProb.textContent = `${(topPrediction.prob * 100).toFixed(1)}%`;
+
+                otherList.innerHTML = predictions.slice(1).map(pred => `
+                    <div class="flex justify-between items-baseline bg-gray-700 p-3 rounded-lg">
+                        <span class="text-2xl font-medium text-gray-200">${pred.label}</span>
+                        <span class="text-lg font-light text-gray-400">
+                            ${(pred.prob * 100).toFixed(1)}%
+                        </span>
+                    </div>
+                `).join('');
+            }
+
+            function setProcessingState(isProcessing, message = "Processing...") {
+                processingIndicator.classList.toggle('hidden', !isProcessing);
+                processingIndicator.querySelector('div').textContent = message;
+                predictionContainer.classList.toggle('hidden', isProcessing);
+                otherList.classList.toggle('hidden', isProcessing);
+            }
+
+            // --- MediaPipe Functions (Unchanged) ---
+            function onResults(results) {
+                if (socket && socket.connected) {
+                    try {
+                        // Use the new, correct function
+                        const features = extractFeatures(results);
+                        
+                        if (mode === 'live') {
+                            // console.log("[Live Mode] Sending frame.");
+                        } else if (mode === 'mp4') {
+                            fileFrameCounter++;
+                            // console.log(`[File Mode] Sending frame ${fileFrameCounter}`);
+                        }
+                        
+                        // Only send frame if in live or mp4 mode
+                        if (mode === 'live' || mode === 'mp4') {
+                            socket.emit('frame', Array.from(features));
+                        }
+                    } catch (error) {
+                        console.error("Error processing landmarks:", error);
+                    }
+                }
+            }
+
+            function startWebcam() {
+                if (camera) camera.stop(); // Stop any existing camera
+                console.log("[Live Mode] Starting webcam..."); 
+                camera = new Camera(liveVideo, {
+                    onFrame: async () => {
+                        await holistic.send({ image: liveVideo });
+                    },
+                    width: 640,
+                    height: 480,
+                });
+                camera.start();
+            }
+
+            function stopWebcam() {
+                if (camera) {
+                    console.log("[Live Mode] Stopping webcam.");
+                    camera.stop();
+                    camera = null;
+                }
+            }
+            
+            function stopFileProcessing() {
+                if (animFrameRef) {
+                    cancelAnimationFrame(animFrameRef);
+                    animFrameRef = null;
+                }
+                fileVideo.pause();
+                console.log("[File Mode] Stopping file processing.");
+            }
+
+            // --- Event Handlers ---
+            
+            function setAppMode(newMode) {
+                mode = newMode;
+                console.log(`[UI] Mode switched to: ${mode}`);
+                updatePredictionUI([]); // Clear predictions
+                
+                // Stop all processing
+                stopWebcam();
+                stopFileProcessing();
+                
+                // Notify backend (if socket is connected)
+                // Use 'mp4' mode for socket backend logic
+                const socketMode = (newMode === 'mp4' || newMode === 'npz') ? 'file' : 'live';
+                if (socket && socket.connected) {
+                    socket.emit('set_mode', { mode: socketMode });
+                }
+
+                // Update Tab UI
+                tabLive.classList.toggle('active', newMode === 'live');
+                tabMp4.classList.toggle('active', newMode === 'mp4');
+                tabNpz.classList.toggle('active', newMode === 'npz');
+                
+                // Update Video Panel
+                const showLive = newMode === 'live';
+                const showMp4 = newMode === 'mp4';
+                const showNpz = newMode === 'npz';
+                
+                liveVideo.style.display = showLive ? 'block' : 'none';
+                fileVideo.style.display = showMp4 ? 'block' : 'none';
+                liveVideoPlaceholder.style.display = showLive ? 'flex' : 'none';
+                npzPlaceholder.style.display = showNpz ? 'flex' : 'none';
+                
+                // Show container if any video-like element is visible
+                videoContainer.style.display = (showLive || showMp4 || showNpz) ? 'block' : 'none';
+
+                
+                // Update Uploader Panel
+                mp4Uploader.style.display = showMp4 ? 'block' : 'none';
+                npzUploader.style.display = showNpz ? 'block' : 'none';
+                fileUploadContainer.style.display = showLive ? 'none' : 'block';
+
+                // Update Title
+                if (newMode === 'live') leftPanelTitle.textContent = 'Live Feed';
+                if (newMode === 'mp4') leftPanelTitle.textContent = 'MP4 File Player';
+                if (newMode === 'npz') leftPanelTitle.textContent = 'NPZ File Uploader';
+                
+                // Start webcam if switching to live
+                if (newMode === 'live') {
+                    startWebcam();
+                }
+            }
+            
+            tabLive.addEventListener('click', () => setAppMode('live'));
+            tabMp4.addEventListener('click', () => setAppMode('mp4'));
+            tabNpz.addEventListener('click', () => setAppMode('npz'));
+
+            // MP4 File Input
+            fileInputMp4.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (file) {
+                    console.log(`[File Mode] New file selected: ${file.name}`);
+                    const url = URL.createObjectURL(file);
+                    fileVideo.src = url;
+                    updatePredictionUI([]);
+                    setProcessingState(false);
+
+                    fileFrameCounter = 0;
+                    console.log("[File Mode] Emitting 'set_mode' to clear backend buffer.");
+                    if (socket && socket.connected) {
+                        socket.emit('set_mode', { mode: 'file' }); // Use 'file' mode for socket
+                    }
+
+                    fileVideo.play().catch(e => console.error("Error playing video:", e));
+                }
+            });
+            
+            // NPZ File Input & Predict Button
+            npzPredictButton.addEventListener('click', async () => {
+                const file = fileInputNpz.files[0];
+                if (!file) {
+                    alert("Please select an NPZ file first.");
+                    return;
+                }
+                
+                console.log(`[NPZ Mode] Uploading file: ${file.name}`);
+                setProcessingState(true, "Uploading & Predicting NPZ...");
+
+                const formData = new FormData();
+                formData.append('npz_file', file);
+
+                try {
+                    const response = await fetch(`${SOCKET_URL}/predict_npz`, {
+                        method: 'POST',
+                        body: formData,
+                    });
+
+                    if (!response.ok) {
+                        const errData = await response.json();
+                        throw new Error(errData.error || `HTTP error! status: ${response.status}`);
+                    }
+
+                    const results = await response.json();
+                    console.log("[NPZ Mode] Received prediction:", results);
+                    updatePredictionUI(results);
+
+                } catch (error) {
+                    console.error("NPZ prediction error:", error);
+                    alert(`NPZ Prediction Failed: ${error.message}`);
+                    updatePredictionUI([]);
+                } finally {
+                    setProcessingState(false);
+                }
+            });
+
+
+            // Video player events (for MP4 mode)
+            fileVideo.addEventListener('play', () => {
+                if (mode !== 'mp4') return;
+                console.log("[File Mode] Playback started. Processing and sending frames...");
+                setProcessingState(true, "Processing MP4...");
+                const processFrame = async () => {
+                    if (fileVideo.paused || fileVideo.ended) {
+                        console.log("[File Mode] Frame processing loop stopped (video paused or ended).");
+                        return;
+                    }
+                    try {
+                        await holistic.send({ image: fileVideo });
+                    } catch (error) {
+                        console.error("Error sending file frame to Holistic:", error);
+                    }
+                    animFrameRef = requestAnimationFrame(processFrame);
+                };
+                animFrameRef = requestAnimationFrame(processFrame);
+            });
+
+            fileVideo.addEventListener('ended', () => {
+                if (mode !== 'mp4') return;
+                setProcessingState(false);
+                if (animFrameRef) cancelAnimationFrame(animFrameRef);
+                if (socket && socket.connected) {
+                    socket.emit('process_file_end');
+                }
+                console.log(`[File Mode] Playback ended. Total frames sent: ${fileFrameCounter}. Requesting final prediction.`);
+            });
+            
+            fileVideo.addEventListener('pause', () => {
+                if (mode !== 'mp4') return;
+                setProcessingState(false);
+                if (animFrameRef) cancelAnimationFrame(animFrameRef);
+                console.log("[File Mode] Playback paused.");
+            });
+
+            // --- Initialization ---
+            function initialize() {
+                console.log("Initializing application...");
+
+                // 1. Setup Holistic
+                holistic = new Holistic({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`,
+                });
+                holistic.setOptions({
+                    modelComplexity: 1,
+                    smoothLandmarks: true,
+                    enableSegmentation: false,
+                    smoothSegmentation: true,
+                    refineFaceLandmarks: false,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5,
+                    // enableWorldLandmarks: true // This is needed for pose_world_landmarks
+                    // ^ Note: in JS Holistic, this is enabled by default.
+                });
+                holistic.onResults(onResults);
+                console.log("Holistic model initialized.");
+
+                // 2. Setup Socket.IO
+                socket = io(SOCKET_URL);
+                console.log("Socket.IO client created. Attempting to connect...");
+
+                socket.on('connect', () => {
+                    const socketMode = (mode === 'mp4' || mode === 'npz') ? 'file' : 'live';
+                    console.log(`[Socket] Connected! (SID: ${socket.id}). Setting initial mode to: ${socketMode}`);
+                    statusText.textContent = 'Connected';
+                    statusIndicator.classList.remove('bg-red-500', 'animate-pulse');
+                    statusIndicator.classList.add('bg-green-500');
+                    socket.emit('set_mode', { mode: socketMode });
+                });
+
+                socket.on('disconnect', () => {
+                    console.log('[Socket] Disconnected.');
+                    statusText.textContent = 'Connecting...';
+                    statusIndicator.classList.add('bg-red-500', 'animate-pulse');
+                    statusIndicator.classList.remove('bg-green-500');
+                });
+
+                socket.on('prediction', (data) => {
+                    if (mode === 'live') {
+                        // console.log("[Socket] Received live prediction.");
+                        updatePredictionUI(data);
+                    }
+                });
+
+                socket.on('file_prediction', (data) => {
+                    if (mode === 'mp4') { // Only for MP4 file predictions
+                        console.log("[Socket] Received final file prediction:", data); 
+                        setProcessingState(false);
+                        updatePredictionUI(data);
+                    }
+                });
+
+                // 3. Start in the default mode
+                setAppMode(mode); // Initialize UI for default mode ('mp4')
+            }
+
+            // Wait for MediaPipe to be loaded
+            const checkMediaPipe = () => {
+                if (window.Holistic && window.Camera) {
+                    console.log("MediaPipe is loaded. Initializing.");
+                    initialize();
+                } else {
+                    console.warn("MediaPipe not loaded yet, retrying in 200ms...");
+                    setTimeout(checkMediaPipe, 200);
+                }
+            };
+            
+            checkMediaPipe();
+
+        }); // --- End of DOMContentLoaded listener ---
+
+    </script>
+</body>
+</html>
